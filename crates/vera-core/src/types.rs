@@ -91,7 +91,21 @@ impl SearchFilters {
     pub fn matches_symbol_type(&self, symbol_type: Option<SymbolType>) -> bool {
         if let Some(ref requested) = self.symbol_type {
             match symbol_type {
-                Some(symbol_type) => symbol_type.to_string().eq_ignore_ascii_case(requested),
+                Some(symbol_type) => {
+                    if symbol_type.to_string().eq_ignore_ascii_case(requested) {
+                        return true;
+                    }
+
+                    // Treat function/method as equivalent for user-facing filtering.
+                    if requested.eq_ignore_ascii_case("function") {
+                        return symbol_type == SymbolType::Method;
+                    }
+                    if requested.eq_ignore_ascii_case("method") {
+                        return symbol_type == SymbolType::Function;
+                    }
+
+                    false
+                }
                 None => false,
             }
         } else {
@@ -1206,8 +1220,15 @@ mod tests {
             Some("Bar"),
             Some(SymbolType::Class),
         );
+        let method = make_test_result(
+            "a.ts",
+            Language::TypeScript,
+            Some("baz"),
+            Some(SymbolType::Method),
+        );
         let none_sym = make_test_result("a.rs", Language::Rust, None, None);
         assert!(filters.matches(&func));
+        assert!(filters.matches(&method));
         assert!(!filters.matches(&cls));
         assert!(!filters.matches(&none_sym));
     }
@@ -1225,6 +1246,35 @@ mod tests {
             Some(SymbolType::Function),
         );
         assert!(filters.matches(&func));
+    }
+
+    #[test]
+    fn filter_by_symbol_type_method_matches_function() {
+        let filters = SearchFilters {
+            symbol_type: Some("method".to_string()),
+            ..Default::default()
+        };
+        let method = make_test_result(
+            "a.ts",
+            Language::TypeScript,
+            Some("foo"),
+            Some(SymbolType::Method),
+        );
+        let func = make_test_result(
+            "a.rs",
+            Language::Rust,
+            Some("bar"),
+            Some(SymbolType::Function),
+        );
+        let cls = make_test_result(
+            "a.py",
+            Language::Python,
+            Some("Baz"),
+            Some(SymbolType::Class),
+        );
+        assert!(filters.matches(&method));
+        assert!(filters.matches(&func));
+        assert!(!filters.matches(&cls));
     }
 
     #[test]

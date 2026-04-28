@@ -380,6 +380,7 @@ enum Commands {
         ///
         /// Options: function, method, class, struct, enum, trait,
         /// interface, type_alias, constant, variable, module, block.
+        /// Note: function and method are treated as aliases.
         #[arg(long, rename_all = "snake_case")]
         r#type: Option<String>,
 

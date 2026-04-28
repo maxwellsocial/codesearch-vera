@@ -956,10 +956,9 @@ async fn filter_by_symbol_type_function() {
     let filtered = apply_filters(results, &filters, 20);
 
     for result in &filtered {
-        assert_eq!(
-            result.symbol_type,
-            Some(SymbolType::Function),
-            "all filtered results should be functions, got: {:?}",
+        assert!(
+            matches!(result.symbol_type, Some(SymbolType::Function) | Some(SymbolType::Method)),
+            "all filtered results should be functions or methods, got: {:?}",
             result.symbol_type
         );
     }
