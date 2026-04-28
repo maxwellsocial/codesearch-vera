@@ -182,7 +182,7 @@ fn apply_intent(query: &str, intent: Option<&str>) -> String {
         .map(|value| value.split_whitespace().collect::<Vec<_>>().join(" "))
         .filter(|value| !value.is_empty());
     match intent {
-        Some(intent) => format!("intent: {intent} | {query}"),
+        Some(intent) => format!("{query} {intent}"),
         None => query.to_string(),
     }
 }

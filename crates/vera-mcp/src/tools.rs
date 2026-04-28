@@ -397,9 +397,10 @@ fn handle_search_code(args: &Value) -> ToolCallResult {
     };
 
     for query in &queries {
-        // If intent is provided, prepend it to the query for better reranking.
+        // If intent is provided, append it to the query for better reranking.
+        // Avoid Tantivy query-syntax characters (`:`, `|`) that break BM25 parsing.
         let effective_query = match intent {
-            Some(i) => format!("intent: {i} | {query}"),
+            Some(i) => format!("{query} {i}"),
             None => query.clone(),
         };
         match vera_core::retrieval::search_service::execute_search(
