@@ -148,7 +148,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
                     },
                     "path": {
                         "type": "string",
-                        "description": "Filter by file path glob (e.g., src/**/*.rs)"
+                        "description": "Filter by file path glob (e.g., src/**/*.rs). Bare paths are treated as directory prefixes recursively (e.g., backend/src matches backend/src/**)."
                     },
                     "symbol_type": {
                         "type": "string",

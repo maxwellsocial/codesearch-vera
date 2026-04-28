@@ -145,6 +145,27 @@ fn glob_matches(pattern: &str, path: &str) -> bool {
     let pattern = pattern.replace('\\', "/");
     let path = path.replace('\\', "/");
 
+    if pattern.is_empty() {
+        return path.is_empty();
+    }
+
+    if !pattern.chars().any(|ch| matches!(ch, '*' | '?' | '[')) {
+        let trimmed = pattern.trim_end_matches('/');
+        if trimmed.is_empty() {
+            return path.trim_matches('/').is_empty();
+        }
+
+        if path == trimmed {
+            return true;
+        }
+
+        if let Some(rest) = path.strip_prefix(trimmed) {
+            return rest.starts_with('/');
+        }
+
+        return false;
+    }
+
     glob_match_recursive(&pattern, &path)
 }
 
@@ -1247,6 +1268,28 @@ mod tests {
     }
 
     #[test]
+    fn filter_by_path_literal_directory_prefix() {
+        let filters = SearchFilters {
+            path_glob: Some("src/features/orders".to_string()),
+            ..Default::default()
+        };
+        let nested = make_test_result(
+            "src/features/orders/orders.usecase.ts",
+            Language::TypeScript,
+            None,
+            None,
+        );
+        let sibling = make_test_result(
+            "src/features/orders-v2/usecase.ts",
+            Language::TypeScript,
+            None,
+            None,
+        );
+        assert!(filters.matches(&nested));
+        assert!(!filters.matches(&sibling));
+    }
+
+    #[test]
     fn filter_combined_lang_and_type() {
         let filters = SearchFilters {
             language: Some("rust".to_string()),
@@ -1352,6 +1395,29 @@ mod tests {
     fn glob_exact_match() {
         assert!(glob_matches("src/main.rs", "src/main.rs"));
         assert!(!glob_matches("src/main.rs", "src/lib.rs"));
+    }
+
+    #[test]
+    fn glob_literal_directory_matches_descendants() {
+        assert!(glob_matches("src", "src/index.ts"));
+        assert!(glob_matches(
+            "src/features/orders",
+            "src/features/orders/orders.usecase.ts"
+        ));
+    }
+
+    #[test]
+    fn glob_literal_directory_matches_self_and_trailing_slash() {
+        assert!(glob_matches("src/", "src/index.ts"));
+        assert!(glob_matches(
+            "src/features/orders",
+            "src/features/orders"
+        ));
+    }
+
+    #[test]
+    fn glob_literal_directory_respects_segment_boundaries() {
+        assert!(!glob_matches("src", "src-other/index.ts"));
     }
 
     #[test]
