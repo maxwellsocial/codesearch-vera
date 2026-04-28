@@ -183,8 +183,18 @@ pub async fn search_hybrid_reranked(
     )
     .await?;
 
-    if hybrid_results.is_empty() {
-        return Ok((hybrid_results, timings));
+    // Skip reranking when there are no surplus candidates beyond the
+    // requested limit — the reranker can only reorder, so it adds latency
+    // without value when every candidate will be returned anyway.
+    if hybrid_results.len() <= limit {
+        debug!(
+            candidates = hybrid_results.len(),
+            limit = limit,
+            "no surplus candidates beyond requested limit, skipping reranking"
+        );
+        let mut results = hybrid_results;
+        results.truncate(limit);
+        return Ok((results, timings));
     }
 
     let rerank_start = Instant::now();
@@ -717,12 +727,14 @@ mod tests {
         let provider = MockProvider::new(dim);
         let reranker = MockReranker::new();
 
+        // Use a small limit (2) so that the ~4 candidates from the test
+        // index exceed it and reranking is actually invoked.
         let (results, _timings) = search_hybrid_reranked(
             &index_dir,
             &provider,
             &reranker,
             "authenticate",
-            5,
+            2,
             60.0,
             dim,
             10,

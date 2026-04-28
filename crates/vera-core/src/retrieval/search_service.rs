@@ -244,8 +244,7 @@ fn effective_rerank_candidates(
 
 fn should_skip_reranking(query: &str, filters: &SearchFilters) -> bool {
     let word_count = query.split_whitespace().count();
-    filters.path_glob.is_some()
-        || filters.symbol_type.is_some()
+    filters.symbol_type.is_some()
         || is_path_weighted_query(query)
         || (matches!(classify_query(query), QueryType::Identifier) && word_count <= 2)
 }
