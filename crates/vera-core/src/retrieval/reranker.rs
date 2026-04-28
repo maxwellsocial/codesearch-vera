@@ -144,6 +144,13 @@ pub struct ApiReranker {
     config: RerankerConfig,
     max_rerank_batch: usize,
     max_document_chars: usize,
+    /// Whether the configured base URL points at Voyage AI.
+    ///
+    /// Voyage's `/v1/rerank` accepts `top_k` instead of the `top_n` field
+    /// used by SiliconFlow, Jina, Cohere, and the rest of the OpenAI-style
+    /// rerank ecosystem. Detected once at construction; mirrors the
+    /// embedding-side detection in `embedding/provider.rs`.
+    is_voyage: bool,
 }
 
 impl ApiReranker {
@@ -163,11 +170,14 @@ impl ApiReranker {
             .build()
             .context("failed to create HTTP client for reranker")?;
 
+        let is_voyage = is_voyage_base_url(&config.base_url);
+
         Ok(Self {
             client,
             config,
             max_rerank_batch,
             max_document_chars,
+            is_voyage,
         })
     }
 
@@ -185,11 +195,16 @@ impl ApiReranker {
         top_n: usize,
     ) -> Result<Vec<RerankScore>, RerankerError> {
         let url = self.endpoint_url();
+        let top = if self.is_voyage {
+            TopLimit::TopK { top_k: top_n }
+        } else {
+            TopLimit::TopN { top_n }
+        };
         let body = RerankRequest {
             model: &self.config.model_id,
             query,
             documents,
-            top_n: Some(top_n),
+            top,
             return_documents: Some(false),
         };
 
@@ -452,6 +467,19 @@ fn format_for_reranker(result: &SearchResult) -> String {
     parts.join("\n")
 }
 
+// ── Provider detection ───────────────────────────────────────────────
+
+/// Returns `true` if the configured base URL points at Voyage AI.
+///
+/// Voyage's `/v1/rerank` accepts `top_k` instead of `top_n`. Mirrors the
+/// embedding-side detection in `embedding/provider.rs` (substring match on
+/// the canonical hostname). A custom Voyage proxy would need the same
+/// hostname or be configured separately; this matches the rest of the
+/// codebase's chosen pattern.
+fn is_voyage_base_url(base_url: &str) -> bool {
+    base_url.contains("api.voyageai.com")
+}
+
 // ── Sanitization ─────────────────────────────────────────────────────
 
 /// Remove any potential API key fragments from error messages.
@@ -507,14 +535,30 @@ struct RerankRequest<'a> {
     model: &'a str,
     query: &'a str,
     documents: &'a [String],
-    #[serde(skip_serializing_if = "Option::is_none")]
-    top_n: Option<usize>,
+    #[serde(flatten)]
+    top: TopLimit,
     #[serde(skip_serializing_if = "Option::is_none")]
     return_documents: Option<bool>,
 }
 
+/// Per-provider field name for the top-results limit.
+///
+/// Voyage AI's `/v1/rerank` requires `top_k`. SiliconFlow / Jina / Cohere
+/// and other OpenAI-style rerank endpoints use `top_n`. The wire format is
+/// otherwise identical, so we flatten this into the request body and pick
+/// the variant from `ApiReranker::is_voyage`.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum TopLimit {
+    TopN { top_n: usize },
+    TopK { top_k: usize },
+}
+
 #[derive(Deserialize)]
 struct RerankResponse {
+    /// Voyage uses `data` instead of `results`. Tolerate both for parity
+    /// with the existing `score`/`relevance_score` alias on `RerankResult`.
+    #[serde(alias = "data")]
     results: Vec<RerankResult>,
 }
 
@@ -1003,5 +1047,92 @@ mod tests {
             matches!(result.unwrap_err(), RerankerError::ConnectionError { .. }),
             "unreachable endpoint should return connection error"
         );
+    }
+
+    // ── Voyage wire-format compatibility ────────────────────────────
+
+    #[test]
+    fn voyage_base_url_detection() {
+        assert!(is_voyage_base_url("https://api.voyageai.com/v1"));
+        assert!(is_voyage_base_url("https://api.voyageai.com/v1/"));
+        assert!(is_voyage_base_url("https://api.voyageai.com"));
+        assert!(!is_voyage_base_url("https://api.siliconflow.com/v1"));
+        assert!(!is_voyage_base_url("https://api.jina.ai/v1"));
+        assert!(!is_voyage_base_url("https://api.cohere.ai/v1"));
+        assert!(!is_voyage_base_url(""));
+    }
+
+    #[test]
+    fn api_reranker_detects_voyage() {
+        let voyage = ApiReranker::new(RerankerConfig::new(
+            "https://api.voyageai.com/v1".to_string(),
+            "rerank-2".to_string(),
+            "k".to_string(),
+        ))
+        .unwrap();
+        assert!(voyage.is_voyage);
+
+        let other = ApiReranker::new(RerankerConfig::new(
+            "https://api.siliconflow.com/v1".to_string(),
+            "Qwen/Qwen3-Reranker-8B".to_string(),
+            "k".to_string(),
+        ))
+        .unwrap();
+        assert!(!other.is_voyage);
+    }
+
+    #[test]
+    fn rerank_request_serializes_top_n_for_non_voyage() {
+        let docs = vec!["a".to_string()];
+        let body = RerankRequest {
+            model: "Qwen/Qwen3-Reranker-8B",
+            query: "q",
+            documents: &docs,
+            top: TopLimit::TopN { top_n: 5 },
+            return_documents: Some(false),
+        };
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["top_n"], serde_json::json!(5));
+        assert!(
+            json.get("top_k").is_none(),
+            "non-voyage providers must not receive top_k: {json}"
+        );
+    }
+
+    #[test]
+    fn rerank_request_serializes_top_k_for_voyage() {
+        let docs = vec!["a".to_string()];
+        let body = RerankRequest {
+            model: "rerank-2",
+            query: "q",
+            documents: &docs,
+            top: TopLimit::TopK { top_k: 5 },
+            return_documents: Some(false),
+        };
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["top_k"], serde_json::json!(5));
+        assert!(
+            json.get("top_n").is_none(),
+            "voyage must not receive top_n: {json}"
+        );
+    }
+
+    #[test]
+    fn rerank_response_accepts_results_field() {
+        let payload = r#"{"results":[{"index":0,"relevance_score":0.9}]}"#;
+        let resp: RerankResponse = serde_json::from_str(payload).unwrap();
+        assert_eq!(resp.results.len(), 1);
+        assert_eq!(resp.results[0].index, 0);
+        assert!((resp.results[0].relevance_score - 0.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rerank_response_accepts_data_field_alias() {
+        // Defensive: tolerate Voyage-style `data` wrapper if used.
+        let payload = r#"{"data":[{"index":2,"relevance_score":0.42}]}"#;
+        let resp: RerankResponse = serde_json::from_str(payload).unwrap();
+        assert_eq!(resp.results.len(), 1);
+        assert_eq!(resp.results[0].index, 2);
+        assert!((resp.results[0].relevance_score - 0.42).abs() < 1e-9);
     }
 }
